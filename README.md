@@ -2,38 +2,43 @@
 
 https://user-images.githubusercontent.com/22454918/159362564-a66d8c23-f7dc-4d1d-8e88-c5c73a49047e.mov
 
-A plugin to visualise and resolve conflicts in neovim.
-This plugin was inspired by [conflict-marker.vim](https://github.com/rhysd/conflict-marker.vim)
+A plugin to visualise and resolve git conflicts in neovim, forked from
+[akinsho/git-conflict.nvim](https://github.com/akinsho/git-conflict.nvim).
 
-## Status
+Conflicts are found by their markers in the buffer rather than by asking git which files are
+unmerged, so they are highlighted wherever they turn up: whatever your working directory, inside
+worktrees and submodules, and in files git no longer reports as conflicted. The flip side is that
+a file merely containing a full set of markers — documentation about merge conflicts, a test
+fixture — is treated as conflicted too.
 
-This plugin is under active development, it should generally work, but you're likely to
-encounter some bugs during usage.
+The plugin claims no keys of its own. Everything it does is a command, and [`mappings`](#mappings)
+binds whichever keys you choose to them, only while a buffer has conflicts.
 
 ## Requirements
 
 - `git`
-- `nvim 0.7+`
+- `nvim 0.10+`
 
 ## Installation
 
 ```lua
+-- lazy.nvim
+{ 'KaySum/git-conflict.nvim', config = true }
+
 -- packer.nvim
-use {'akinsho/git-conflict.nvim', tag = "*", config = function()
+use {'KaySum/git-conflict.nvim', config = function()
   require('git-conflict').setup()
 end}
-
--- lazy.nvim
-{'akinsho/git-conflict.nvim', version = "*", config = true}
 ```
 
-I recommend using the {tag|version} field of your package manager, so your version of this plugin is only updated when a new tag is pushed as `main` itself might be **unstable**.
+There are no tags, so leave your package manager's `version` / `tag` field out and track `main`,
+or pin a commit if you want to control when you pick up changes.
 
 ## Configuration
 
 ```lua
 {
-  default_mappings = true, -- disable buffer local mapping created by this plugin
+  mappings = {}, -- list of { lhs, rhs, ... }; empty by default, see Mappings below
   default_commands = true, -- disable commands created by this plugin
   disable_diagnostics = false, -- This will disable the diagnostics in a buffer whilst it is conflicted
   list_opener = 'copen', -- command or function to open the conflicts list
@@ -48,11 +53,16 @@ I recommend using the {tag|version} field of your package manager, so your versi
 
 - `GitConflictChooseOurs` — Select the current changes.
 - `GitConflictChooseTheirs` — Select the incoming changes.
+- `GitConflictChooseBase` — Select the common ancestor, shown by `diff3`/`zdiff3`.
 - `GitConflictChooseBoth` — Select both changes.
 - `GitConflictChooseNone` — Select none of the changes.
 - `GitConflictNextConflict` — Move to the next conflict.
 - `GitConflictPrevConflict` — Move to the previous conflict.
-- `GitConflictListQf` — Get all conflict to quickfix
+- `GitConflictListQf` — Send the project's conflicts to the quickfix list.
+- `GitConflictRefresh` — Re-scan the current buffer for conflict markers.
+
+The `Choose` commands also work over a visual selection, where they resolve every conflict inside
+it at once.
 
 ### Listing conflicts
 
@@ -71,62 +81,60 @@ fired called `GitConflictResolved`.
 Either of these can be used to run logic whilst dealing with conflicts
 e.g.
 
+Both carry the buffer they describe as `data.bufnr`.
+
 ```lua
 vim.api.nvim_create_autocmd('User', {
   pattern = 'GitConflictDetected',
-  callback = function()
-    vim.notify('Conflict detected in '..vim.fn.expand('<afile>'))
-    vim.keymap.set('n', 'cww', function()
-      engage.conflict_buster()
-      create_buffer_local_mappings()
-    end)
-  end
+  callback = function(args)
+    vim.notify('Conflict detected in ' .. vim.api.nvim_buf_get_name(args.data.bufnr))
+  end,
 })
-
 ```
+
+To bind keys only while a buffer has conflicts you do not need an autocommand —
+use [`mappings`](#mappings).
 
 ## Mappings
 
-This plugin offers default buffer local mappings inside conflicted files. This is primarily because applying these mappings only to relevant buffers
-is impossible through global mappings. A user can however disable these by setting `default_mappings = false` anyway and create global mappings as shown below.
-The default mappings are:
-
-- <kbd>c</kbd><kbd>o</kbd> — choose ours
-- <kbd>c</kbd><kbd>t</kbd> — choose theirs
-- <kbd>c</kbd><kbd>b</kbd> — choose both
-- <kbd>c</kbd><kbd>0</kbd> — choose none
-- <kbd>]</kbd><kbd>x</kbd> — move to previous conflict
-- <kbd>[</kbd><kbd>x</kbd> — move to next conflict
-
-If you would rather not use these then you can specify your own mappings.
+This plugin claims **no keys of its own**. List the ones you want in `mappings`, written like a
+[lazy.nvim](https://github.com/folke/lazy.nvim) `keys` entry — `{ lhs, rhs, ... }`. They are
+applied buffer-locally while a buffer has conflicts and removed once it no longer does, so the
+keys stay free everywhere else.
 
 ```lua
-require'git-conflict'.setup {
-  default_mappings = {
-    ours = 'o',
-    theirs = 't',
-    none = '0',
-    both = 'b',
-    next = 'n',
-    prev = 'p',
+require('git-conflict').setup {
+  mappings = {
+    { 'co', '<cmd>GitConflictChooseOurs<cr>', mode = { 'n', 'x' }, desc = 'Choose Ours' },
+    { 'ct', '<cmd>GitConflictChooseTheirs<cr>', mode = { 'n', 'x' }, desc = 'Choose Theirs' },
+    { 'cb', '<cmd>GitConflictChooseBoth<cr>', mode = { 'n', 'x' }, desc = 'Choose Both' },
+    { 'ca', '<cmd>GitConflictChooseBase<cr>', mode = { 'n', 'x' }, desc = 'Choose Base' },
+    { 'c0', '<cmd>GitConflictChooseNone<cr>', mode = { 'n', 'x' }, desc = 'Choose None' },
+    { ']x', '<cmd>GitConflictNextConflict<cr>', desc = 'Next Conflict' },
+    { '[x', '<cmd>GitConflictPrevConflict<cr>', desc = 'Prev Conflict' },
   },
 }
 ```
 
-or alternatively, set `default_mappings = false` and apply the mappings yourself
+`rhs` is anything `vim.keymap.set` accepts — a command string or a Lua function. `mode` defaults
+to normal; any other field (`desc`, `expr`, `nowait`, …) is passed straight through, and `silent`
+defaults to `true`. An entry missing its `lhs` or `rhs` is reported once, at startup, and skipped.
 
-<details><summary>example manual mappings</summary>
+Bind the choose commands in visual mode as well to resolve every conflict inside a selection at
+once.
+
+Every action is also a `<Plug>` mapping, if you would rather bind it yourself:
 
 ```lua
-vim.keymap.set('n', 'co', '<Plug>(git-conflict-ours)')
-vim.keymap.set('n', 'ct', '<Plug>(git-conflict-theirs)')
-vim.keymap.set('n', 'cb', '<Plug>(git-conflict-both)')
-vim.keymap.set('n', 'c0', '<Plug>(git-conflict-none)')
-vim.keymap.set('n', '[x', '<Plug>(git-conflict-prev-conflict)')
+vim.keymap.set({ 'n', 'x' }, 'co', '<Plug>(git-conflict-ours)')
 vim.keymap.set('n', ']x', '<Plug>(git-conflict-next-conflict)')
 ```
 
-</details>
+`<Plug>(git-conflict-ours)`, `-theirs`, `-both`, `-base`, `-none`, `-next-conflict` and
+`-prev-conflict`. Unlike `mappings`, these are global — binding them yourself means they apply in
+every buffer, not just conflicted ones.
+
+The [commands](#commands) work anywhere, with no mapping at all.
 
 ## API
 
@@ -147,12 +155,3 @@ purposes.
 	number: The amount of conflicts.
 ```
 </details>
-
-## Issues
-
-**Please read this** — This plugin is not intended to do anything other than provide fancy visuals, and some mappings to handle conflict resolution
-It will not be expanded to become a full git management plugin, there are a zillion plugins that do that already, this won't be one of those.
-
-### Feature requests
-
-Open source should be collaborative, if you have an idea for a feature you'd like to see added. Submit a PR rather than a feature request.
