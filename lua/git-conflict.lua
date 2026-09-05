@@ -98,7 +98,7 @@ local ANCESTOR_HL = 'GitConflictAncestor'
 local CURRENT_LABEL_HL = 'GitConflictCurrentLabel'
 local INCOMING_LABEL_HL = 'GitConflictIncomingLabel'
 local ANCESTOR_LABEL_HL = 'GitConflictAncestorLabel'
-local PRIORITY = vim.highlight.priorities.user
+local PRIORITY = (vim.hl or vim.highlight).priorities.user
 local NAMESPACE = api.nvim_create_namespace('git-conflict')
 local AUGROUP_NAME = 'GitConflictCommands'
 
@@ -217,7 +217,14 @@ end
 ---@param lnum integer
 ---@return integer extmark id
 local function draw_section_label(bufnr, hl_group, label, lnum)
-  local remaining_space = api.nvim_win_get_width(0) - api.nvim_strwidth(label)
+  local width = vim.o.columns
+  for _, win in ipairs(api.nvim_list_wins()) do
+    if api.nvim_win_get_buf(win) == bufnr then
+      width = api.nvim_win_get_width(win)
+      break
+    end
+  end
+  local remaining_space = math.max(width - api.nvim_strwidth(label), 0)
   return api.nvim_buf_set_extmark(bufnr, NAMESPACE, lnum, 0, {
     hl_group = hl_group,
     virt_text = { { label .. string.rep(' ', remaining_space), hl_group } },
@@ -229,10 +236,10 @@ end
 ---Highlight each part of a git conflict i.e. the incoming changes vs the current/HEAD changes
 ---TODO: should extmarks be ephemeral? or is it less expensive to save them and only re-apply
 ---them when a buffer changes since otherwise we have to reparse the whole buffer constantly
+---@param bufnr integer
 ---@param positions table
 ---@param lines string[]
-local function highlight_conflicts(positions, lines)
-  local bufnr = api.nvim_get_current_buf()
+local function highlight_conflicts(bufnr, positions, lines)
   M.clear(bufnr)
 
   for _, position in ipairs(positions) do
@@ -258,7 +265,10 @@ local function highlight_conflicts(positions, lines)
       local ancestor_start = position.ancestor.range_start
       local ancestor_end = position.ancestor.range_end
       local ancestor_label = lines[ancestor_start + 1] .. ' (Base changes)'
-      local id = hl_range(bufnr, ANCESTOR_HL, ancestor_start + 1, ancestor_end + 1)
+      -- An empty base section has no content rows; highlighting it would spill onto the separator
+      local id = ancestor_end > ancestor_start
+          and hl_range(bufnr, ANCESTOR_HL, ancestor_start + 1, ancestor_end + 1)
+          or nil
       local label_id = draw_section_label(bufnr, ANCESTOR_LABEL_HL, ancestor_label, ancestor_start)
       position.marks.ancestor = { label = label_id, content = id }
     end
@@ -378,13 +388,14 @@ local function parse_buffer(bufnr, range_start, range_end)
 
   update_visited_buffers(bufnr, positions)
   if has_conflict then
-    highlight_conflicts(positions, lines)
+    highlight_conflicts(bufnr, positions, lines)
   else
     M.clear(bufnr)
   end
-  if prev_conflicts ~= has_conflict then
+  if vim.b[bufnr].git_conflict_active ~= has_conflict then
+    vim.b[bufnr].git_conflict_active = has_conflict
     local pattern = has_conflict and 'GitConflictDetected' or 'GitConflictResolved'
-    api.nvim_exec_autocmds('User', { pattern = pattern })
+    api.nvim_exec_autocmds('User', { pattern = pattern, data = { bufnr = bufnr } })
   end
 end
 
@@ -588,18 +599,18 @@ function M.setup(user_config)
   api.nvim_create_autocmd('User', {
     group = AUGROUP_NAME,
     pattern = 'GitConflictDetected',
-    callback = function()
-      local bufnr = api.nvim_get_current_buf()
-      if config.disable_diagnostics then vim.diagnostic.disable(bufnr) end
+    callback = function(args)
+      local bufnr = args.data and args.data.bufnr or api.nvim_get_current_buf()
+      if config.disable_diagnostics then vim.diagnostic.enable(false, { bufnr = bufnr }) end
     end,
   })
 
   api.nvim_create_autocmd('User', {
     group = AUGROUP_NAME,
     pattern = 'GitConflictResolved',
-    callback = function()
-      local bufnr = api.nvim_get_current_buf()
-      if config.disable_diagnostics then vim.diagnostic.enable(bufnr) end
+    callback = function(args)
+      local bufnr = args.data and args.data.bufnr or api.nvim_get_current_buf()
+      if config.disable_diagnostics then vim.diagnostic.enable(true, { bufnr = bufnr }) end
     end,
   })
 
@@ -770,12 +781,8 @@ function M.debug_watchers() vim.pretty_print({ watchers = watchers }) end
 
 function M.conflict_count(bufnr)
   if bufnr and not api.nvim_buf_is_valid(bufnr) then return 0 end
-  bufnr = bufnr or 0
-
-  local name = api.nvim_buf_get_name(bufnr)
-  if not visited_buffers[name] then return 0 end
-
-  return #visited_buffers[name].positions
+  local buf = visited_buffers[bufnr or api.nvim_get_current_buf()]
+  return buf and buf.positions and #buf.positions or 0
 end
 
 return M

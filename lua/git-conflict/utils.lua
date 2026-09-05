@@ -70,7 +70,8 @@ end
 ---@return table<string, string>
 function M.get_hl(name)
   if not name then return {} end
-  return api.nvim_get_hl_by_name(name, true)
+  local hl = api.nvim_get_hl(0, { name = name, link = false })
+  return { background = hl.bg, foreground = hl.fg }
 end
 
 return M
