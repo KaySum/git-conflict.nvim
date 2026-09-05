@@ -58,16 +58,7 @@ local job = utils.job
 --- @field tick integer
 --- @field bufnr integer
 
---- @class GitConflictMappings
---- @field ours string
---- @field theirs string
---- @field none string
---- @field both string
---- @field next string
---- @field prev string
-
 --- @class GitConflictConfig
---- @field default_mappings GitConflictMappings
 --- @field default_commands boolean
 --- @field disable_diagnostics boolean
 --- @field list_opener string|function
@@ -75,7 +66,6 @@ local job = utils.job
 --- @field debug boolean
 
 --- @class GitConflictUserConfig
---- @field default_mappings? boolean|GitConflictMappings
 --- @field default_commands? boolean
 --- @field disable_diagnostics? boolean
 --- @field list_opener? string|function
@@ -125,20 +115,9 @@ local DEFAULT_INCOMING_BG_COLOR = 3229523 -- #314753
 local DEFAULT_ANCESTOR_BG_COLOR = 6824314 -- #68217A
 -----------------------------------------------------------------------------//
 
---- @type GitConflictMappings
-local DEFAULT_MAPPINGS = {
-  ours = 'co',
-  theirs = 'ct',
-  none = 'c0',
-  both = 'cb',
-  next = ']x',
-  prev = '[x',
-}
-
 --- @type GitConflictConfig
 local config = {
   debug = false,
-  default_mappings = DEFAULT_MAPPINGS,
   default_commands = true,
   disable_diagnostics = false,
   list_opener = 'copen',
@@ -403,7 +382,7 @@ local function parse_buffer(bufnr, range_start, range_end)
   else
     M.clear(bufnr)
   end
-  if prev_conflicts ~= has_conflict or not vim.b[bufnr].conflict_mappings_set then
+  if prev_conflicts ~= has_conflict then
     local pattern = has_conflict and 'GitConflictDetected' or 'GitConflictResolved'
     api.nvim_exec_autocmds('User', { pattern = pattern })
   end
@@ -500,13 +479,13 @@ local function set_commands()
       end
     end)
   end, { nargs = 0 })
-  command('GitConflictChooseOurs', '<Plug>(git-conflict-ours)', { nargs = 0 })
-  command('GitConflictChooseTheirs', '<Plug>(git-conflict-theirs)', { nargs = 0 })
-  command('GitConflictChooseBoth', '<Plug>(git-conflict-both)', { nargs = 0 })
-  command('GitConflictChooseBase', '<Plug>(git-conflict-base)', { nargs = 0 })
-  command('GitConflictChooseNone', '<Plug>(git-conflict-none)', { nargs = 0 })
-  command('GitConflictNextConflict', '<Plug>(git-conflict-next-conflict)', { nargs = 0 })
-  command('GitConflictPrevConflict', '<Plug>(git-conflict-prev-conflict)', { nargs = 0 })
+  command('GitConflictChooseOurs', function() M.choose(SIDES.OURS) end, { nargs = 0 })
+  command('GitConflictChooseTheirs', function() M.choose(SIDES.THEIRS) end, { nargs = 0 })
+  command('GitConflictChooseBoth', function() M.choose(SIDES.BOTH) end, { nargs = 0 })
+  command('GitConflictChooseBase', function() M.choose(SIDES.BASE) end, { nargs = 0 })
+  command('GitConflictChooseNone', function() M.choose(SIDES.NONE) end, { nargs = 0 })
+  command('GitConflictNextConflict', function() M.find_next(SIDES.OURS) end, { nargs = 0 })
+  command('GitConflictPrevConflict', function() M.find_prev(SIDES.OURS) end, { nargs = 0 })
 end
 
 -----------------------------------------------------------------------------//
@@ -533,45 +512,6 @@ local function set_plug_mappings()
     function() M.find_prev('ours') end,
     opts('Previous Conflict')
   )
-end
-
-local function setup_buffer_mappings(bufnr)
-  local function opts(desc)
-    return { silent = true, buffer = bufnr, desc = 'Git Conflict: ' .. desc }
-  end
-
-  map({ 'n', 'v' }, config.default_mappings.ours, '<Plug>(git-conflict-ours)', opts('Choose Ours'))
-  map({ 'n', 'v' }, config.default_mappings.both, '<Plug>(git-conflict-both)', opts('Choose Both'))
-  map({ 'n', 'v' }, config.default_mappings.none, '<Plug>(git-conflict-none)', opts('Choose None'))
-  map({ 'n', 'v' }, config.default_mappings.theirs, '<Plug>(git-conflict-theirs)', opts('Choose Theirs'))
-  map({ 'v', 'v' }, config.default_mappings.ours, '<Plug>(git-conflict-ours)', opts('Choose Ours'))
-  -- map('V', config.default_mappings.ours, '<Plug>(git-conflict-ours)', opts('Choose Ours'))
-  map(
-    'n',
-    config.default_mappings.prev,
-    '<Plug>(git-conflict-prev-conflict)',
-    opts('Previous Conflict')
-  )
-  map(
-    'n',
-    config.default_mappings.next,
-    '<Plug>(git-conflict-next-conflict)',
-    opts('Next Conflict')
-  )
-  vim.b[bufnr].conflict_mappings_set = true
-end
-
----@param key string
----@param mode "'n'|'v'|'o'|'nv'|'nvo'"?
----@return boolean
-local function is_mapped(key, mode) return fn.hasmapto(key, mode or 'n') > 0 end
-
-local function clear_buffer_mappings(bufnr)
-  if not bufnr or not vim.b[bufnr].conflict_mappings_set then return end
-  for _, mapping in pairs(config.default_mappings) do
-    if is_mapped(mapping) then api.nvim_buf_del_keymap(bufnr, 'n', mapping) end
-  end
-  vim.b[bufnr].conflict_mappings_set = false
 end
 
 -----------------------------------------------------------------------------//
@@ -609,8 +549,6 @@ function M.setup(user_config)
   end
 
   local _user_config = user_config or {}
-
-  if _user_config.default_mappings == true then _user_config.default_mappings = DEFAULT_MAPPINGS end
 
   config = vim.tbl_deep_extend('force', config, _user_config)
 
@@ -653,7 +591,6 @@ function M.setup(user_config)
     callback = function()
       local bufnr = api.nvim_get_current_buf()
       if config.disable_diagnostics then vim.diagnostic.disable(bufnr) end
-      if config.default_mappings then setup_buffer_mappings(bufnr) end
     end,
   })
 
@@ -663,7 +600,6 @@ function M.setup(user_config)
     callback = function()
       local bufnr = api.nvim_get_current_buf()
       if config.disable_diagnostics then vim.diagnostic.enable(bufnr) end
-      if config.default_mappings then clear_buffer_mappings(bufnr) end
     end,
   })
 
