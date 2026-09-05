@@ -58,7 +58,16 @@ local job = utils.job
 --- @field tick integer
 --- @field bufnr integer
 
+--- A keymap applied while a buffer has conflicts, written like a lazy.nvim `keys` entry.
+--- Any field other than these is passed straight through to `vim.keymap.set`.
+--- @class ConflictMapping
+--- @field [1] string the keys to bind
+--- @field [2] string|function what they run, e.g. '<cmd>GitConflictChooseOurs<cr>'
+--- @field mode? string|string[] defaults to normal mode
+--- @field desc? string label shown by which-key and :map
+
 --- @class GitConflictConfig
+--- @field mappings ConflictMapping[]
 --- @field default_commands boolean
 --- @field disable_diagnostics boolean
 --- @field list_opener string|function
@@ -66,6 +75,7 @@ local job = utils.job
 --- @field debug boolean
 
 --- @class GitConflictUserConfig
+--- @field mappings? ConflictMapping[]
 --- @field default_commands? boolean
 --- @field disable_diagnostics? boolean
 --- @field list_opener? string|function
@@ -118,6 +128,10 @@ local DEFAULT_ANCESTOR_BG_COLOR = 6824314 -- #68217A
 --- @type GitConflictConfig
 local config = {
   debug = false,
+  --- Keymaps written like lazy.nvim's `keys`, applied buffer-locally while a buffer has
+  --- conflicts and removed once it no longer does. Empty by default: this plugin claims no
+  --- keys unless you ask for them.
+  mappings = {},
   default_commands = true,
   disable_diagnostics = false,
   list_opener = 'copen',
@@ -491,6 +505,25 @@ local function set_plug_mappings()
   )
 end
 
+--- Apply the user's `mappings` to a buffer, or remove them again.
+---@param bufnr integer
+---@param active boolean
+local function set_buffer_mappings(bufnr, active)
+  if not api.nvim_buf_is_valid(bufnr) then return end
+  for _, spec in ipairs(config.mappings) do
+    local mode = spec.mode or 'n'
+    if not active then
+      pcall(vim.keymap.del, mode, spec[1], { buffer = bufnr })
+    else
+      local opts = vim.tbl_extend('force', { silent = true }, spec, { buffer = bufnr })
+      opts[1], opts[2], opts.mode = nil, nil, nil
+      -- a malformed entry must not take the autocmd down with it
+      local ok, err = pcall(map, mode, spec[1], spec[2], opts)
+      if not ok then utils.notify(err, 'error', true) end
+    end
+  end
+end
+
 -----------------------------------------------------------------------------//
 -- Highlights
 -----------------------------------------------------------------------------//
@@ -555,6 +588,7 @@ function M.setup(user_config)
     callback = function(args)
       local bufnr = args.data and args.data.bufnr or api.nvim_get_current_buf()
       if config.disable_diagnostics then vim.diagnostic.enable(false, { bufnr = bufnr }) end
+      set_buffer_mappings(bufnr, true)
     end,
   })
 
@@ -564,6 +598,7 @@ function M.setup(user_config)
     callback = function(args)
       local bufnr = args.data and args.data.bufnr or api.nvim_get_current_buf()
       if config.disable_diagnostics then vim.diagnostic.enable(true, { bufnr = bufnr }) end
+      set_buffer_mappings(bufnr, false)
     end,
   })
 
