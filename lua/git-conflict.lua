@@ -137,14 +137,8 @@ local function create_visited_buffers()
   })
 end
 
---- A list of buffers that have conflicts in them. This is derived from
---- git using the diff command, and updated at intervals
+--- Buffers that contain conflict markers, keyed by full path.
 local visited_buffers = create_visited_buffers()
-
-local state = {
-  ---@type string?
-  current_watcher_dir = nil,
-}
 
 -----------------------------------------------------------------------------//
 
@@ -399,67 +393,39 @@ local function parse_buffer(bufnr, range_start, range_end)
   end
 end
 
---- Fetch the conflicted files for the current buffer file's repo
---- this is throttled by tracking when last we checked for conflicts
---- and if it is over this interval we check again otherwise we return.
---- When clearing only clear buffers that are in the same repository as the conflicted files
---- as the result (files) might contain only files from a buffer in
---- a different repository in which case extmarks could be cleared for unrelated projects
-local function fetch_conflicts(buf)
-  buf = (buf and api.nvim_buf_is_valid(buf)) and buf or api.nvim_get_current_buf()
-  get_git_root(fn.fnamemodify(api.nvim_buf_get_name(buf), ':h'), function(git_root)
-    get_conflicted_files(git_root, function(files, repo)
-      for name, b in pairs(visited_buffers) do
-        -- FIXME: this will not work for nested repositories
-        if vim.startswith(name, repo) and not files[name] and b.bufnr then
-          visited_buffers[name] = nil
-          M.clear(b.bufnr)
-        end
-      end
-      for path, _ in pairs(files) do
-        visited_buffers[path] = visited_buffers[path] or {}
-      end
-    end)
-  end)
-end
-
----@type table<string, userdata>
-local watchers = {}
-
-local on_throttled_change = utils.throttle(1000, function(dir, err, change)
-  if err then return utils.notify(fmt('Error watching %s(%s): %s', dir, err, change), 'error') end
-  if config.debug then utils.notify(fmt('Watching %s - change: %s ', dir, change), 'info') end
-  fetch_conflicts()
-end)
-
---- Stop any watchers that aren't for the current project
----@param curr_dir string
-local function stop_running_watchers(curr_dir)
-  for prev_dir, watcher in pairs(watchers) do
-    if watcher ~= watchers[curr_dir] then
-      watcher:stop()
-      watchers[prev_dir] = nil
-    end
+---Does this buffer contain conflict markers?
+---@param bufnr integer
+---@return boolean
+local function has_markers(bufnr)
+  for _, line in ipairs(api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+    if line:match(conflict_start) then return true end
   end
+  return false
 end
 
---- Create a FS watcher for the current git directory or restart an existing one
----@param dir string
-local function watch_gitdir(dir)
-  -- Stop if there is already a watcher running
-  if watchers[dir] then return end
-
-  ---@type userdata
-  watchers[dir] = vim.loop.new_fs_event()
-  watchers[dir]:start(
-    dir,
-    { recursive = true },
-    vim.schedule_wrap(function(...) on_throttled_change(dir, ...) end)
-  )
-  state.current_watcher_dir = dir
+--- Start tracking a buffer that contains conflict markers, or stop tracking one that no
+--- longer does. Detection is purely textual: a buffer is conflicted if it looks conflicted,
+--- with no dependency on the cwd, the repository, or git being reachable at all.
+---@param bufnr integer?
+---@param force boolean? rescan even if the buffer has not changed since the last scan
+local function track_buffer(bufnr, force)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  if not api.nvim_buf_is_valid(bufnr) or not utils.is_valid_buf(bufnr) then return end
+  local name = api.nvim_buf_get_name(bufnr)
+  if name == '' then return end
+  -- Scanning is O(lines) and this runs on every BufEnter, so skip untouched buffers
+  if not force and vim.b[bufnr].git_conflict_scan == vim.b[bufnr].changedtick then return end
+  vim.b[bufnr].git_conflict_scan = vim.b[bufnr].changedtick
+  if not has_markers(bufnr) then
+    if visited_buffers[name] then
+      visited_buffers[name] = nil
+      M.clear(bufnr)
+    end
+    return
+  end
+  visited_buffers[name] = visited_buffers[name] or {}
+  parse_buffer(bufnr)
 end
-
-local throttled_watcher = utils.throttle(1000, watch_gitdir)
 
 ---Process a buffer if the changed tick has changed
 ---@param bufnr integer?
@@ -477,7 +443,7 @@ end
 
 local function set_commands()
   local command = api.nvim_create_user_command
-  command('GitConflictRefresh', function() fetch_conflicts() end, { nargs = 0 })
+  command('GitConflictRefresh', function() track_buffer(nil, true) end, { nargs = 0 })
   command('GitConflictListQf', function()
     M.conflicts_to_qf_items(function(items)
       if #items > 0 then
@@ -575,26 +541,13 @@ function M.setup(user_config)
     callback = function() set_highlights(config.highlights) end,
   })
 
-  api.nvim_create_autocmd({ 'VimEnter', 'BufRead', 'SessionLoadPost', 'DirChanged' }, {
-    group = AUGROUP_NAME,
-    callback = function(args)
-      local gitdir = fn.getcwd() .. sep .. '.git'
-      if not vim.loop.fs_stat(gitdir) or state.current_watcher_dir == fn.getcwd() then return end
-      stop_running_watchers(gitdir)
-      fetch_conflicts(args.buf)
-      throttled_watcher(gitdir)
-    end,
-  })
-
-  api.nvim_create_autocmd('VimLeavePre', {
-    group = AUGROUP_NAME,
-    callback = function()
-      for key, watcher in pairs(watchers) do
-        watcher:stop()
-        watchers[key] = nil
-      end
-    end,
-  })
+  api.nvim_create_autocmd(
+    { 'BufReadPost', 'BufNewFile', 'BufEnter', 'FileChangedShellPost', 'SessionLoadPost' },
+    {
+      group = AUGROUP_NAME,
+      callback = function(args) track_buffer(args.buf) end,
+    }
+  )
 
   api.nvim_create_autocmd('User', {
     group = AUGROUP_NAME,
@@ -646,27 +599,46 @@ local function quickfix_items_from_positions(item, items, visited_buf)
   end
 end
 
---- Convert the conflicts detected via get conflicted files into a list of quickfix entries.
----@param callback fun(files: table<string, integer[]>)
+--- Build the quickfix list. Highlighting is textual, but the list is meant to answer "where are
+--- the conflicts in this project", so ask git for the unmerged files and fall back to the buffers
+--- we are tracking when git cannot answer (no repo, or the conflicts are not staged as unmerged).
+---@param callback fun(items: table[])
 function M.conflicts_to_qf_items(callback)
-  local items = {}
-  for filename, visited_buf in pairs(visited_buffers) do
-    local item = {
-      filename = filename,
-      pattern = conflict_start,
-      text = 'git conflict',
-      type = 'E',
-      valid = 1,
-    }
-
-    if visited_buf and next(visited_buf) then
-      quickfix_items_from_positions(item, items, visited_buf)
-    else
-      table.insert(items, item)
+  local function items_for(filenames)
+    local items = {}
+    for filename in pairs(filenames) do
+      local item = {
+        filename = filename,
+        pattern = conflict_start,
+        text = 'git conflict',
+        type = 'E',
+        valid = 1,
+      }
+      local visited_buf = visited_buffers[filename]
+      if visited_buf and next(visited_buf) then
+        quickfix_items_from_positions(item, items, visited_buf)
+      else
+        table.insert(items, item)
+      end
     end
+    return items
   end
 
-  callback(items)
+  local tracked = {}
+  for filename in pairs(visited_buffers) do
+    tracked[filename] = true
+  end
+
+  local dir = fn.fnamemodify(api.nvim_buf_get_name(api.nvim_get_current_buf()), ':h')
+  get_git_root(dir, function(git_root)
+    if not git_root or git_root == '' then return callback(items_for(tracked)) end
+    get_conflicted_files(git_root, function(files)
+      for filename in pairs(files) do
+        tracked[filename] = true
+      end
+      callback(items_for(tracked))
+    end)
+  end)
 end
 
 ---@param bufnr integer?
@@ -776,8 +748,6 @@ function M.choose(side)
   end
   parse_buffer(bufnr)
 end
-
-function M.debug_watchers() vim.pretty_print({ watchers = watchers }) end
 
 function M.conflict_count(bufnr)
   if bufnr and not api.nvim_buf_is_valid(bufnr) then return 0 end
