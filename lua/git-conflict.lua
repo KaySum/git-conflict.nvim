@@ -569,74 +569,51 @@ function M.find_prev(side)
   set_cursor(pos, side)
 end
 
----Select the changes to keep
+---Replace a conflict with whichever side was picked
+---@param position ConflictPosition
 ---@param side ConflictSide
-function M.choose(side)
-  local bufnr = api.nvim_get_current_buf()
-  if vim.fn.mode() == 'v' or vim.fn.mode() == 'V' or vim.fn.mode() == '' then
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes('<Esc>', true, false, true), 'n', true)
-    -- have to defer so that the < and > marks are set
-    vim.defer_fn(function()
-      local start = vim.api.nvim_buf_get_mark(0, '<')[1]
-      local finish = vim.api.nvim_buf_get_mark(0, '>')[1]
-      local position = find_position(bufnr, function(line, pos)
-        local left = pos.current.range_start >= start - 1
-        local right = pos.incoming.range_end <= finish + 1
-        return left and right
-      end)
-      while position ~= nil do
-        local lines = {}
-        if vim.tbl_contains({ SIDES.OURS, SIDES.THEIRS, SIDES.BASE }, side) then
-          local data = position[name_map[side]]
-          lines = utils.get_buf_lines(data.content_start, data.content_end + 1)
-        elseif side == SIDES.BOTH then
-          local first =
-              utils.get_buf_lines(position.current.content_start, position.current.content_end + 1)
-          local second =
-              utils.get_buf_lines(position.incoming.content_start, position.incoming.content_end + 1)
-          lines = vim.list_extend(first, second)
-        elseif side == SIDES.NONE then
-          lines = {}
-        else
-          return
-        end
-
-        local pos_start = position.current.range_start < 0 and 0 or position.current.range_start
-        local pos_end = position.incoming.range_end + 1
-
-        api.nvim_buf_set_lines(0, pos_start, pos_end, false, lines)
-        parse_buffer(bufnr)
-        position = find_position(bufnr, function(line, pos)
-          local left = pos.current.range_start >= start - 1
-          local right = pos.incoming.range_end <= finish + 1
-          return left and right
-        end)
-      end
-    end, 50)
-    return
-  end
-  local position = get_current_position(bufnr)
-  if not position then return end
+local function resolve(position, side)
   local lines = {}
   if vim.tbl_contains({ SIDES.OURS, SIDES.THEIRS, SIDES.BASE }, side) then
     local data = position[name_map[side]]
     lines = utils.get_buf_lines(data.content_start, data.content_end + 1)
   elseif side == SIDES.BOTH then
-    local first =
-        utils.get_buf_lines(position.current.content_start, position.current.content_end + 1)
-    local second =
-        utils.get_buf_lines(position.incoming.content_start, position.incoming.content_end + 1)
-    lines = vim.list_extend(first, second)
-  elseif side == SIDES.NONE then
-    lines = {}
-  else
+    local current, incoming = position.current, position.incoming
+    local ours = utils.get_buf_lines(current.content_start, current.content_end + 1)
+    local theirs = utils.get_buf_lines(incoming.content_start, incoming.content_end + 1)
+    lines = vim.list_extend(ours, theirs)
+  elseif side ~= SIDES.NONE then
     return
   end
+  local range_start = math.max(position.current.range_start, 0)
+  api.nvim_buf_set_lines(0, range_start, position.incoming.range_end + 1, false, lines)
+end
 
-  local pos_start = position.current.range_start < 0 and 0 or position.current.range_start
-  local pos_end = position.incoming.range_end + 1
+---Select the changes to keep, for the conflict under the cursor or for every conflict fully
+---inside the visual selection
+---@param side ConflictSide
+function M.choose(side)
+  local bufnr = api.nvim_get_current_buf()
+  local mode = fn.mode()
+  if mode ~= 'v' and mode ~= 'V' and mode ~= '\22' then
+    local position = get_current_position(bufnr)
+    if not position then return end
+    resolve(position, side)
+    return parse_buffer(bufnr)
+  end
 
-  api.nvim_buf_set_lines(0, pos_start, pos_end, false, lines)
+  local match = visited_buffers[bufnr]
+  if not match or not match.positions then return end
+  local first, last = fn.getpos('v')[2] - 1, fn.getpos('.')[2] - 1
+  if first > last then first, last = last, first end
+  api.nvim_feedkeys(api.nvim_replace_termcodes('<Esc>', true, false, true), 'n', false)
+  -- Work upwards so that resolving one conflict cannot move the ones still to do
+  for i = #match.positions, 1, -1 do
+    local position = match.positions[i]
+    if position.current.range_start >= first and position.incoming.range_end <= last then
+      resolve(position, side)
+    end
+  end
   parse_buffer(bufnr)
 end
 
