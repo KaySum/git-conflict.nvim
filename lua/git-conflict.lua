@@ -507,6 +507,11 @@ function M.setup(user_config)
     callback = function(args) track_buffer(args.buf) end,
   })
 
+  api.nvim_create_autocmd('BufWipeout', {
+    group = AUGROUP_NAME,
+    callback = function(args) visited_buffers[api.nvim_buf_get_name(args.buf)] = nil end,
+  })
+
   api.nvim_create_autocmd('User', {
     group = AUGROUP_NAME,
     pattern = 'GitConflictDetected',
