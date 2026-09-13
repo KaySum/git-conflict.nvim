@@ -331,8 +331,9 @@ end
 
 ---Get the conflict marker positions for a buffer if any and update the buffers state
 ---@param bufnr integer
-local function parse_buffer(bufnr)
-  local lines = utils.get_buf_lines(0, -1, bufnr)
+---@param lines string[]? the buffer's lines, when the caller has already read them
+local function parse_buffer(bufnr, lines)
+  lines = lines or utils.get_buf_lines(0, -1, bufnr)
   local has_conflict, positions = detect_conflicts(lines)
 
   update_visited_buffers(bufnr, positions)
@@ -354,10 +355,10 @@ local function parse_buffer(bufnr)
 end
 
 ---Does this buffer contain conflict markers?
----@param bufnr integer
+---@param lines string[]
 ---@return boolean
-local function has_markers(bufnr)
-  for _, line in ipairs(api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+local function has_markers(lines)
+  for _, line in ipairs(lines) do
     if line:match(conflict_start) then return true end
   end
   return false
@@ -375,10 +376,12 @@ local function track_buffer(bufnr, force)
   if #fn.win_findbuf(bufnr) == 0 then return end
   local name = api.nvim_buf_get_name(bufnr)
   if name == '' then return end
-  -- Scanning is O(lines) and this runs on every BufEnter, so skip untouched buffers
+  -- Reading the buffer is O(lines) and this runs on every BufEnter, so skip untouched ones
   if not force and vim.b[bufnr].git_conflict_scan == vim.b[bufnr].changedtick then return end
   vim.b[bufnr].git_conflict_scan = vim.b[bufnr].changedtick
-  if not has_markers(bufnr) then
+  -- Read the buffer once: reading it costs far more than the scanning that follows
+  local lines = utils.get_buf_lines(0, -1, bufnr)
+  if not has_markers(lines) then
     if visited_buffers[name] then
       visited_buffers[name] = nil
       M.clear(bufnr)
@@ -386,7 +389,7 @@ local function track_buffer(bufnr, force)
     return
   end
   visited_buffers[name] = visited_buffers[name] or {}
-  parse_buffer(bufnr)
+  parse_buffer(bufnr, lines)
 end
 
 -----------------------------------------------------------------------------//
