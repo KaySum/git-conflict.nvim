@@ -7,16 +7,15 @@ A plugin to visualise and resolve git conflicts in neovim, forked from
 
 Conflicts are found by their markers in the buffer rather than by asking git which files are
 unmerged, so they are highlighted wherever they turn up: whatever your working directory, inside
-worktrees and submodules, and in files git no longer reports as conflicted. The flip side is that
-a file merely containing a full set of markers — documentation about merge conflicts, a test
-fixture — is treated as conflicted too.
+worktrees and submodules, and in files git no longer reports as conflicted. git is never invoked.
+The flip side is that a file merely containing a full set of markers — documentation about merge
+conflicts, a test fixture — is treated as conflicted too.
 
 The plugin claims no keys of its own. Everything it does is a command, and [`mappings`](#mappings)
 binds whichever keys you choose to them, only while a buffer has conflicts.
 
 ## Requirements
 
-- `git`
 - `nvim 0.10+`
 
 ## Installation
@@ -41,7 +40,6 @@ or pin a commit if you want to control when you pick up changes.
   mappings = {}, -- list of { lhs, rhs, ... }; empty by default, see Mappings below
   default_commands = true, -- disable commands created by this plugin
   disable_diagnostics = false, -- This will disable the diagnostics in a buffer whilst it is conflicted
-  list_opener = 'copen', -- command or function to open the conflicts list
   highlights = { -- They must have background color, otherwise the default color will be used
     incoming = 'DiffAdd',
     current = 'DiffText',
@@ -58,19 +56,10 @@ or pin a commit if you want to control when you pick up changes.
 - `GitConflictChooseNone` — Select none of the changes.
 - `GitConflictNextConflict` — Move to the next conflict.
 - `GitConflictPrevConflict` — Move to the previous conflict.
-- `GitConflictListQf` — Send the project's conflicts to the quickfix list.
 - `GitConflictRefresh` — Re-scan the current buffer for conflict markers.
 
 The `Choose` commands also work over a visual selection, where they resolve every conflict inside
 it at once.
-
-### Listing conflicts
-
-You can list conflicts in the quick fix list using the `GitConflictListQf` command
-
-<img width="475" alt="Screen Shot 2022-03-27 at 12 03 43" src="https://user-images.githubusercontent.com/22454918/160278511-705a0361-a387-4fc1-8b20-bd799bf85b82.png">
-
-quickfix displayed using [nvim-pqf](https://github.com/yorickpeterse/nvim-pqf)
 
 ## Autocommands
 

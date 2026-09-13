@@ -4,7 +4,6 @@
 local M = {}
 
 local api = vim.api
-local fn = vim.fn
 
 --- Wrapper for [vim.notify]
 ---@param msg string|string[]
@@ -16,16 +15,6 @@ function M.notify(msg, level, once)
   local opts = { title = 'Git conflict' }
   if once then return vim.notify_once(msg, lvl, opts) end
   vim.notify(msg, lvl, opts)
-end
-
---- Start an async job
----@param cmd string
----@param callback fun(data: string[]): nil
-function M.job(cmd, callback)
-  fn.jobstart(cmd, {
-    stdout_buffered = true,
-    on_stdout = function(_, data, _) callback(data) end,
-  })
 end
 
 ---Only call the passed function once every timeout in ms

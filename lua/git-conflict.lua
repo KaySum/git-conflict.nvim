@@ -5,18 +5,10 @@ local utils = require('git-conflict.utils')
 
 local fn = vim.fn
 local api = vim.api
-local fmt = string.format
 local map = vim.keymap.set
-local job = utils.job
 -----------------------------------------------------------------------------//
 -- REFERENCES:
 -----------------------------------------------------------------------------//
--- Detecting the state of a git repository based on files in the .git directory.
--- https://stackoverflow.com/questions/49774200/how-to-tell-if-my-git-repo-is-in-a-conflict
--- git diff commands to git a list of conflicted files
--- https://stackoverflow.com/questions/3065650/whats-the-simplest-way-to-list-conflicted-files-in-git
--- how to show a full path for files in a git diff command
--- https://stackoverflow.com/questions/10459374/making-git-diff-stat-show-full-file-path
 -- Advanced merging
 -- https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging
 
@@ -66,7 +58,6 @@ local job = utils.job
 --- @field mappings ConflictMapping[]
 --- @field default_commands boolean
 --- @field disable_diagnostics boolean
---- @field list_opener string|function
 --- @field highlights ConflictHighlights
 --- @field debug boolean
 
@@ -74,7 +65,6 @@ local job = utils.job
 --- @field mappings? ConflictMapping[]
 --- @field default_commands? boolean
 --- @field disable_diagnostics? boolean
---- @field list_opener? string|function
 --- @field highlights? ConflictHighlights
 --- @field debug? boolean
 
@@ -108,9 +98,6 @@ local PRIORITY = (vim.hl or vim.highlight).priorities.user
 local NAMESPACE = api.nvim_create_namespace('git-conflict')
 local AUGROUP_NAME = 'GitConflictCommands'
 
-local sep = package.config:sub(1, 1)
-local IS_WINDOWS = sep ~= '/'
-
 local conflict_start = '^<<<<<<<'
 local conflict_middle = '^======='
 local conflict_end = '^>>>>>>>'
@@ -130,7 +117,6 @@ local config = {
   mappings = {},
   default_commands = true,
   disable_diagnostics = false,
-  list_opener = 'copen',
   highlights = {
     current = 'DiffText',
     incoming = 'DiffAdd',
@@ -151,32 +137,6 @@ end
 local visited_buffers = create_visited_buffers()
 
 -----------------------------------------------------------------------------//
-
----Get full path to the repository of the directory passed in
----@param dir any
----@param callback fun(data: string)
-local function get_git_root(dir, callback)
-  job({ 'git', '-C', dir, 'rev-parse', '--show-toplevel' }, function(data) callback(data[1]) end)
-end
-
---- Get a list of the conflicted files within the specified directory
---- NOTE: only conflicted files within the git repository of the directory passed in are returned
---- also we add a line prefix to the git command so that the full path is returned
---- e.g. --line-prefix=`git rev-parse --show-toplevel`
----@reference: https://stackoverflow.com/a/10874862
----@param dir string?
----@param callback fun(files: table<string, integer[]>, string)
-local function get_conflicted_files(dir, callback)
-  local cmd = { 'git', '-C', dir, 'diff', ('--line-prefix=%s%s'):format(dir, sep), '--name-only', '--diff-filter=U' }
-  job(cmd, function(data)
-    local files = {}
-    for _, filename in ipairs(data) do
-      if IS_WINDOWS then filename = filename:gsub('/', sep) end
-      if #filename > 0 then files[filename] = files[filename] or {} end
-    end
-    callback(files, dir)
-  end)
-end
 
 ---Add the positions to the buffer in our in memory buffer list
 ---positions are keyed by a list of range start and end for each mark
@@ -458,18 +418,6 @@ end
 local function set_commands()
   local command = api.nvim_create_user_command
   command('GitConflictRefresh', function() track_buffer(nil, true) end, { nargs = 0 })
-  command('GitConflictListQf', function()
-    M.conflicts_to_qf_items(function(items)
-      if #items > 0 then
-        fn.setqflist(items, 'r')
-        if type(config.list_opener) == 'function' then
-          config.list_opener()
-        else
-          vim.cmd(config.list_opener)
-        end
-      end
-    end)
-  end, { nargs = 0 })
   command('GitConflictChooseOurs', function() M.choose(SIDES.OURS) end, { nargs = 0 })
   command('GitConflictChooseTheirs', function() M.choose(SIDES.THEIRS) end, { nargs = 0 })
   command('GitConflictChooseBoth', function() M.choose(SIDES.BOTH) end, { nargs = 0 })
@@ -550,14 +498,6 @@ end
 
 ---@param user_config GitConflictUserConfig
 function M.setup(user_config)
-  if fn.executable('git') <= 0 then
-    return vim.schedule(
-      function()
-        utils.notify('You need to have git installed in order to use this plugin', 'error', true)
-      end
-    )
-  end
-
   local _user_config = user_config or {}
 
   config = vim.tbl_deep_extend('force', config, _user_config)
@@ -612,72 +552,6 @@ function M.setup(user_config)
   for _, win in ipairs(api.nvim_list_wins()) do
     track_buffer(api.nvim_win_get_buf(win))
   end
-end
-
---- Add additional metadata to a quickfix entry if we have already visited the buffer and have that
---- information
----@param item table<string, integer|string>
----@param items table<string, integer|string>[]
----@param visited_buf ConflictBufferCache
-local function quickfix_items_from_positions(item, items, visited_buf)
-  if vim.tbl_isempty(visited_buf.positions) then return end
-  for _, pos in ipairs(visited_buf.positions) do
-    for key, value in pairs(pos) do
-      if
-          vim.tbl_contains({ name_map.ours, name_map.theirs, name_map.base }, key)
-          and not vim.tbl_isempty(value)
-      then
-        local lnum = value.range_start + 1
-        local next_item = vim.deepcopy(item)
-        next_item.text = fmt('%s change', key, lnum)
-        next_item.lnum = lnum
-        next_item.col = 0
-        table.insert(items, next_item)
-      end
-    end
-  end
-end
-
---- Build the quickfix list. Highlighting is textual, but the list is meant to answer "where are
---- the conflicts in this project", so ask git for the unmerged files and fall back to the buffers
---- we are tracking when git cannot answer (no repo, or the conflicts are not staged as unmerged).
----@param callback fun(items: table[])
-function M.conflicts_to_qf_items(callback)
-  local function items_for(filenames)
-    local items = {}
-    for filename in pairs(filenames) do
-      local item = {
-        filename = filename,
-        pattern = conflict_start,
-        text = 'git conflict',
-        type = 'E',
-        valid = 1,
-      }
-      local visited_buf = visited_buffers[filename]
-      if visited_buf and next(visited_buf) then
-        quickfix_items_from_positions(item, items, visited_buf)
-      else
-        table.insert(items, item)
-      end
-    end
-    return items
-  end
-
-  local tracked = {}
-  for filename in pairs(visited_buffers) do
-    tracked[filename] = true
-  end
-
-  local dir = fn.fnamemodify(api.nvim_buf_get_name(api.nvim_get_current_buf()), ':h')
-  get_git_root(dir, function(git_root)
-    if not git_root or git_root == '' then return callback(items_for(tracked)) end
-    get_conflicted_files(git_root, function(files)
-      for filename in pairs(files) do
-        tracked[filename] = true
-      end
-      callback(items_for(tracked))
-    end)
-  end)
 end
 
 ---@param bufnr integer?
