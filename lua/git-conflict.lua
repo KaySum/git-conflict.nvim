@@ -16,7 +16,7 @@ local map = vim.keymap.set
 -- Types
 -----------------------------------------------------------------------------//
 
----@alias ConflictSide "'ours'"|"'theirs'"|"'both'"|"'base'"|"'none'"
+---@alias ConflictSide 'ours'|'theirs'|'both'|'base'|'none'
 
 --- @class ConflictHighlights
 --- @field current string
@@ -37,6 +37,7 @@ local map = vim.keymap.set
 --- @class ConflictPosition
 --- @field incoming Range
 --- @field current Range
+--- @field ancestor Range empty unless the conflict was written with diff3 or zdiff3
 --- @field labels ConflictLabel[]
 
 --- @class ConflictBufferCache
@@ -133,8 +134,7 @@ local visited_buffers = create_visited_buffers()
 
 -----------------------------------------------------------------------------//
 
----Add the positions to the buffer in our in memory buffer list
----positions are keyed by a list of range start and end for each mark
+---Record a buffer's conflicts against its path, with the tick they were parsed at
 ---@param buf integer
 ---@param positions ConflictPosition[]
 local function update_visited_buffers(buf, positions)
@@ -281,8 +281,8 @@ end
 
 ---Helper function to find a conflict position based on a comparator function
 ---@param bufnr integer
----@param comparator fun(string, integer): boolean
----@param opts table?
+---@param comparator fun(line: integer, position: ConflictPosition): boolean
+---@param opts { wrap: boolean?, reverse: boolean? }?
 ---@return ConflictPosition?
 local function find_position(bufnr, comparator, opts)
   local match = visited_buffers[bufnr]
@@ -477,7 +477,7 @@ local function set_highlights(highlights)
   api.nvim_set_hl(0, ANCESTOR_LABEL_HL, { background = ancestor_label_bg, default = true })
 end
 
----@param user_config GitConflictUserConfig
+---@param user_config GitConflictUserConfig?
 function M.setup(user_config)
   local _user_config = user_config or {}
 
@@ -618,6 +618,9 @@ function M.choose(side)
   parse_buffer(bufnr)
 end
 
+---How many conflicts a buffer currently has
+---@param bufnr integer? defaults to the current buffer
+---@return integer
 function M.conflict_count(bufnr)
   if bufnr and not api.nvim_buf_is_valid(bufnr) then return 0 end
   local buf = visited_buffers[bufnr or api.nvim_get_current_buf()]
