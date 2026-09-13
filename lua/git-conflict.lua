@@ -31,14 +31,10 @@ local job = utils.job
 --- @field incoming string
 --- @field ancestor string?
 
----@class RangeMark
----@field label integer
----@field content string
-
---- @class PositionMarks
---- @field current RangeMark
---- @field incoming RangeMark
---- @field ancestor RangeMark
+--- @class ConflictLabel
+--- @field lnum integer
+--- @field hl string
+--- @field text string
 
 --- @class Range
 --- @field range_start integer
@@ -50,7 +46,7 @@ local job = utils.job
 --- @field incoming Range
 --- @field middle Range
 --- @field current Range
---- @field marks PositionMarks
+--- @field labels ConflictLabel[]
 
 --- @class ConflictBufferCache
 --- @field lines table<integer, boolean> map of conflicted line numbers
@@ -201,10 +197,9 @@ end
 ---@param hl string
 ---@param range_start integer
 ---@param range_end integer
----@return integer? extmark_id
 local function hl_range(bufnr, hl, range_start, range_end)
   if not range_start or not range_end then return end
-  return api.nvim_buf_set_extmark(bufnr, NAMESPACE, range_start, 0, {
+  api.nvim_buf_set_extmark(bufnr, NAMESPACE, range_start, 0, {
     hl_group = hl,
     hl_eol = true,
     hl_mode = 'combine',
@@ -213,39 +208,11 @@ local function hl_range(bufnr, hl, range_start, range_end)
   })
 end
 
----Add highlights and additional data to each section heading of the conflict marker
----These works by covering the underlying text with an extmark that contains the same information
----with some extra detail appended.
----TODO: ideally this could be done by using virtual text at the EOL and highlighting the
----background but this doesn't work and currently this is done by filling the rest of the line with
----empty space and overlaying the line content
----@param bufnr integer
----@param hl_group string
----@param label string
----@param lnum integer
----@return integer extmark id
-local function draw_section_label(bufnr, hl_group, label, lnum)
-  local width = vim.o.columns
-  for _, win in ipairs(api.nvim_list_wins()) do
-    if api.nvim_win_get_buf(win) == bufnr then
-      width = api.nvim_win_get_width(win)
-      break
-    end
-  end
-  local remaining_space = math.max(width - api.nvim_strwidth(label), 0)
-  return api.nvim_buf_set_extmark(bufnr, NAMESPACE, lnum, 0, {
-    hl_group = hl_group,
-    virt_text = { { label .. string.rep(' ', remaining_space), hl_group } },
-    virt_text_pos = 'overlay',
-    priority = PRIORITY,
-  })
-end
-
 ---Highlight each part of a git conflict i.e. the incoming changes vs the current/HEAD changes
----TODO: should extmarks be ephemeral? or is it less expensive to save them and only re-apply
----them when a buffer changes since otherwise we have to reparse the whole buffer constantly
+---The section headings are not drawn here: they are overlays sized to a window, so they are
+---drawn per window by `draw_labels` and only the text to draw is recorded.
 ---@param bufnr integer
----@param positions table
+---@param positions ConflictPosition[]
 ---@param lines string[]
 local function highlight_conflicts(bufnr, positions, lines)
   M.clear(bufnr)
@@ -255,30 +222,56 @@ local function highlight_conflicts(bufnr, positions, lines)
     local current_end = position.current.range_end
     local incoming_start = position.incoming.range_start
     local incoming_end = position.incoming.range_end
+
+    hl_range(bufnr, CURRENT_HL, current_start, current_end + 1)
+    hl_range(bufnr, INCOMING_HL, incoming_start, incoming_end + 1)
+
     -- Add one since the index access in lines is 1 based
     local current_label = lines[current_start + 1] .. ' (Current changes)'
     local incoming_label = lines[incoming_end + 1] .. ' (Incoming changes)'
 
-    local curr_label_id = draw_section_label(bufnr, CURRENT_LABEL_HL, current_label, current_start)
-    local curr_id = hl_range(bufnr, CURRENT_HL, current_start, current_end + 1)
-    local inc_id = hl_range(bufnr, INCOMING_HL, incoming_start, incoming_end + 1)
-    local inc_label_id = draw_section_label(bufnr, INCOMING_LABEL_HL, incoming_label, incoming_end)
-
-    position.marks = {
-      current = { label = curr_label_id, content = curr_id },
-      incoming = { label = inc_label_id, content = inc_id },
-      ancestor = {},
+    position.labels = {
+      { lnum = current_start, hl = CURRENT_LABEL_HL, text = current_label },
+      { lnum = incoming_end, hl = INCOMING_LABEL_HL, text = incoming_label },
     }
     if not vim.tbl_isempty(position.ancestor) then
       local ancestor_start = position.ancestor.range_start
       local ancestor_end = position.ancestor.range_end
-      local ancestor_label = lines[ancestor_start + 1] .. ' (Base changes)'
       -- An empty base section has no content rows; highlighting it would spill onto the separator
-      local id = ancestor_end > ancestor_start
-          and hl_range(bufnr, ANCESTOR_HL, ancestor_start + 1, ancestor_end + 1)
-          or nil
-      local label_id = draw_section_label(bufnr, ANCESTOR_LABEL_HL, ancestor_label, ancestor_start)
-      position.marks.ancestor = { label = label_id, content = id }
+      if ancestor_end > ancestor_start then
+        hl_range(bufnr, ANCESTOR_HL, ancestor_start + 1, ancestor_end + 1)
+      end
+      position.labels[#position.labels + 1] = {
+        lnum = ancestor_start,
+        hl = ANCESTOR_LABEL_HL,
+        text = lines[ancestor_start + 1] .. ' (Base changes)',
+      }
+    end
+  end
+end
+
+---Cover each section heading with its label, padded out to fill the window it is drawn in.
+---The marks are ephemeral because the padding is only correct for `winid`, and the same buffer
+---can be on screen in windows of different widths.
+---@param bufnr integer
+---@param winid integer
+---@param toprow integer
+---@param botrow integer
+local function draw_labels(bufnr, winid, toprow, botrow)
+  local positions = visited_buffers[bufnr] and visited_buffers[bufnr].positions
+  if not positions then return end
+  local width = api.nvim_win_get_width(winid)
+  for _, position in ipairs(positions) do
+    for _, label in ipairs(position.labels or {}) do
+      if label.lnum >= toprow and label.lnum <= botrow then
+        local padding = string.rep(' ', math.max(width - api.nvim_strwidth(label.text), 0))
+        api.nvim_buf_set_extmark(bufnr, NAMESPACE, label.lnum, 0, {
+          virt_text = { { label.text .. padding, label.hl } },
+          virt_text_pos = 'overlay',
+          priority = PRIORITY,
+          ephemeral = true,
+        })
+      end
     end
   end
 end
@@ -608,8 +601,10 @@ function M.setup(user_config)
 
   api.nvim_set_decoration_provider(NAMESPACE, {
     on_buf = function(_, bufnr, _) return utils.is_valid_buf(bufnr) end,
-    on_win = function(_, _, bufnr, _, _)
-      if visited_buffers[bufnr] then process(bufnr) end
+    on_win = function(_, winid, bufnr, toprow, botrow)
+      if not visited_buffers[bufnr] then return end
+      process(bufnr)
+      draw_labels(bufnr, winid, toprow, botrow)
     end,
   })
 
@@ -748,11 +743,6 @@ function M.choose(side)
         local pos_end = position.incoming.range_end + 1
 
         api.nvim_buf_set_lines(0, pos_start, pos_end, false, lines)
-        api.nvim_buf_del_extmark(0, NAMESPACE, position.marks.incoming.label)
-        api.nvim_buf_del_extmark(0, NAMESPACE, position.marks.current.label)
-        if position.marks.ancestor.label then
-          api.nvim_buf_del_extmark(0, NAMESPACE, position.marks.ancestor.label)
-        end
         parse_buffer(bufnr)
         position = find_position(bufnr, function(line, pos)
           local left = pos.current.range_start >= start - 1
@@ -785,11 +775,6 @@ function M.choose(side)
   local pos_end = position.incoming.range_end + 1
 
   api.nvim_buf_set_lines(0, pos_start, pos_end, false, lines)
-  api.nvim_buf_del_extmark(0, NAMESPACE, position.marks.incoming.label)
-  api.nvim_buf_del_extmark(0, NAMESPACE, position.marks.current.label)
-  if position.marks.ancestor.label then
-    api.nvim_buf_del_extmark(0, NAMESPACE, position.marks.ancestor.label)
-  end
   parse_buffer(bufnr)
 end
 
