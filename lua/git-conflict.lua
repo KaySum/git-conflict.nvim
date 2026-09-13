@@ -403,7 +403,12 @@ local function parse_buffer(bufnr, range_start, range_end)
   if vim.b[bufnr].git_conflict_active ~= has_conflict then
     vim.b[bufnr].git_conflict_active = has_conflict
     local pattern = has_conflict and 'GitConflictDetected' or 'GitConflictResolved'
-    api.nvim_exec_autocmds('User', { pattern = pattern, data = { bufnr = bufnr } })
+    -- This can run inside the decoration provider, where a handler may not touch text or windows
+    vim.schedule(function()
+      if api.nvim_buf_is_valid(bufnr) then
+        api.nvim_exec_autocmds('User', { pattern = pattern, data = { bufnr = bufnr } })
+      end
+    end)
   end
 end
 
