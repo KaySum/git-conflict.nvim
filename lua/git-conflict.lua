@@ -212,8 +212,8 @@ end
 ---@param winid integer
 ---@param toprow integer
 ---@param botrow integer
-local function draw_labels(bufnr, winid, toprow, botrow)
-  local positions = visited_buffers[bufnr] and visited_buffers[bufnr].positions
+---@param positions ConflictPosition[]?
+local function draw_labels(bufnr, winid, toprow, botrow, positions)
   if not positions then return end
   local width = api.nvim_win_get_width(winid)
   for _, position in ipairs(positions) do
@@ -389,16 +389,6 @@ local function track_buffer(bufnr, force)
   parse_buffer(bufnr)
 end
 
----Process a buffer if the changed tick has changed
----@param bufnr integer?
-local function process(bufnr)
-  bufnr = bufnr or api.nvim_get_current_buf()
-  if visited_buffers[bufnr] and visited_buffers[bufnr].tick == vim.b[bufnr].changedtick then
-    return
-  end
-  parse_buffer(bufnr)
-end
-
 -----------------------------------------------------------------------------//
 -- Commands
 -----------------------------------------------------------------------------//
@@ -534,10 +524,13 @@ function M.setup(user_config)
 
   api.nvim_set_decoration_provider(NAMESPACE, {
     on_buf = function(_, bufnr, _) return utils.is_valid_buf(bufnr) end,
+    -- Runs for every window on every redraw, so the cache is looked up once: indexing it by
+    -- buffer number goes through a metatable that has to resolve the buffer's name
     on_win = function(_, winid, bufnr, toprow, botrow)
-      if not visited_buffers[bufnr] then return end
-      process(bufnr)
-      draw_labels(bufnr, winid, toprow, botrow)
+      local cache = visited_buffers[bufnr]
+      if not cache then return end
+      if cache.tick ~= vim.b[bufnr].changedtick then parse_buffer(bufnr) end
+      draw_labels(bufnr, winid, toprow, botrow, cache.positions)
     end,
   })
 
