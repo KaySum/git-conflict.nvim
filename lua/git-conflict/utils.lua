@@ -17,22 +17,6 @@ function M.notify(msg, level, once)
   vim.notify(msg, lvl, opts)
 end
 
----Only call the passed function once every timeout in ms
----@param timeout integer
----@param func function
----@return function
-function M.throttle(timeout, func)
-  local timer = vim.loop.new_timer()
-  local running = false
-  return function(...)
-    if not running then
-      func(...)
-      running = true
-      timer:start(timeout, 0, function() running = false end)
-    end
-  end
-end
-
 ---Wrapper around `api.nvim_buf_get_lines` which defaults to the current buffer
 ---@param start integer
 ---@param _end integer

@@ -36,12 +36,10 @@ local map = vim.keymap.set
 
 --- @class ConflictPosition
 --- @field incoming Range
---- @field middle Range
 --- @field current Range
 --- @field labels ConflictLabel[]
 
 --- @class ConflictBufferCache
---- @field lines table<integer, boolean> map of conflicted line numbers
 --- @field positions ConflictPosition[]
 --- @field tick integer
 --- @field bufnr integer
@@ -59,14 +57,12 @@ local map = vim.keymap.set
 --- @field default_commands boolean
 --- @field disable_diagnostics boolean
 --- @field highlights ConflictHighlights
---- @field debug boolean
 
 --- @class GitConflictUserConfig
 --- @field mappings? ConflictMapping[]
 --- @field default_commands? boolean
 --- @field disable_diagnostics? boolean
 --- @field highlights? ConflictHighlights
---- @field debug? boolean
 
 -----------------------------------------------------------------------------//
 -- Constants
@@ -110,7 +106,6 @@ local DEFAULT_ANCESTOR_BG_COLOR = 6824314 -- #68217A
 
 --- @type GitConflictConfig
 local config = {
-  debug = false,
   --- Keymaps written like lazy.nvim's `keys`, applied buffer-locally while a buffer has
   --- conflicts and removed once it no longer does. Empty by default: this plugin claims no
   --- keys unless you ask for them.
@@ -250,7 +245,6 @@ local function detect_conflicts(lines)
       has_start = true
       position = {
         current = { range_start = lnum, content_start = lnum + 1 },
-        middle = {},
         incoming = {},
         ancestor = {},
       }
@@ -271,8 +265,6 @@ local function detect_conflicts(lines)
         position.current.range_end = lnum - 1
         position.current.content_end = lnum - 1
       end
-      position.middle.range_start = lnum
-      position.middle.range_end = lnum + 1
       position.incoming.range_start = lnum + 1
       position.incoming.content_start = lnum + 1
     end
@@ -339,12 +331,8 @@ end
 
 ---Get the conflict marker positions for a buffer if any and update the buffers state
 ---@param bufnr integer
----@param range_start integer
----@param range_end integer
-local function parse_buffer(bufnr, range_start, range_end)
-  local lines = utils.get_buf_lines(range_start or 0, range_end or -1, bufnr)
-  local prev_conflicts = visited_buffers[bufnr].positions ~= nil
-      and #visited_buffers[bufnr].positions > 0
+local function parse_buffer(bufnr)
+  local lines = utils.get_buf_lines(0, -1, bufnr)
   local has_conflict, positions = detect_conflicts(lines)
 
   update_visited_buffers(bufnr, positions)
@@ -403,12 +391,12 @@ end
 
 ---Process a buffer if the changed tick has changed
 ---@param bufnr integer?
-local function process(bufnr, range_start, range_end)
+local function process(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
   if visited_buffers[bufnr] and visited_buffers[bufnr].tick == vim.b[bufnr].changedtick then
     return
   end
-  parse_buffer(bufnr, range_start, range_end)
+  parse_buffer(bufnr)
 end
 
 -----------------------------------------------------------------------------//
