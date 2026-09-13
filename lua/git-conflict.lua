@@ -425,6 +425,8 @@ end
 local function track_buffer(bufnr, force)
   bufnr = bufnr or api.nvim_get_current_buf()
   if not api.nvim_buf_is_valid(bufnr) or not utils.is_valid_buf(bufnr) then return end
+  -- Only what is on screen matters; a hidden buffer is scanned again when it is displayed
+  if #fn.win_findbuf(bufnr) == 0 then return end
   local name = api.nvim_buf_get_name(bufnr)
   if name == '' then return end
   -- Scanning is O(lines) and this runs on every BufEnter, so skip untouched buffers
@@ -574,13 +576,10 @@ function M.setup(user_config)
     callback = function() set_highlights(config.highlights) end,
   })
 
-  api.nvim_create_autocmd(
-    { 'BufReadPost', 'BufNewFile', 'BufEnter', 'FileChangedShellPost', 'SessionLoadPost' },
-    {
-      group = AUGROUP_NAME,
-      callback = function(args) track_buffer(args.buf) end,
-    }
-  )
+  api.nvim_create_autocmd({ 'BufEnter', 'BufWinEnter', 'FileChangedShellPost' }, {
+    group = AUGROUP_NAME,
+    callback = function(args) track_buffer(args.buf) end,
+  })
 
   api.nvim_create_autocmd('User', {
     group = AUGROUP_NAME,
@@ -608,6 +607,11 @@ function M.setup(user_config)
       if visited_buffers[bufnr] then process(bufnr) end
     end,
   })
+
+  -- Whatever is already on screen missed its window event, e.g. when lazy loaded
+  for _, win in ipairs(api.nvim_list_wins()) do
+    track_buffer(api.nvim_win_get_buf(win))
+  end
 end
 
 --- Add additional metadata to a quickfix entry if we have already visited the buffer and have that
